@@ -23,9 +23,9 @@ spec:
         httpGet:             # Lots of timeout values with defaults, be sure they are ideal for your workload
           path: /ready
           port: 8080
-      livenessProbe:         # only needed if your app becomes unresponsive or you don't have a readinessProbe, but this is up for debate.
+      livenessProbe:         # only needed if your app tends to go unresponsive or you don't have a readinessProbe, but this is up for debate
         httpGet:             # Lots of timeout values with defaults, be sure they are ideal for your workload
-          path: /ready
+          path: /alive
           port: 8080
 
       resources:             # Because if limits = requests then QoS is set to "Guaranteed"
@@ -41,6 +41,8 @@ spec:
       securityContext:
         allowPrivilegeEscalation: false # prevent sudo, etc.
         privileged: false               # prevent acting like host root
+  
+  terminationGracePeriodSeconds: 600 # default is 30, but you may need more time to gracefully shutdown (HTTP long polling, user uploads, etc)
 
   # per-pod security context
   # enable seccomp and force non-root user
