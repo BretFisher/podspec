@@ -19,7 +19,7 @@ spec:
         - containerPort: 8080
           protocol: TCP
 
-      readinessProbe:        # only needed if your pod has a service and listening port
+      readinessProbe:        # I always recommend using these, even if your app has no listening ports (this affects any rolling update)
         httpGet:             # Lots of timeout values with defaults, be sure they are ideal for your workload
           path: /ready
           port: 8080
