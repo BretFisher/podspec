@@ -6,6 +6,8 @@ This single-file repository is meant to be a starting point for your Pod specs, 
 
 It's based on years of consulting, the Kubernetes courses and workshops I do, and [this tweet when I first had the idea](https://twitter.com/BretFisher/status/1550326044577730560).
 
+## Watch me [walk through this `pod.yaml` on YouTube.](https://www.youtube.com/watch?v=4CzG4Uqd9jM)
+
 ## The spec from [`./pod.yaml`](./pod.yaml)
 
 ```yaml
