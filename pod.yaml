@@ -41,6 +41,11 @@ spec:
       securityContext:
         allowPrivilegeEscalation: false # prevent sudo, etc.
         privileged: false               # prevent acting like host root
+        capabilities:                   # linux capabilities 
+          drop:                         # remove all capabilities
+            - ALL
+          # add:                        # add only those capabilities that is needed
+          #  - NET_ADMIN
   
   terminationGracePeriodSeconds: 600 # default is 30, but you may need more time to gracefully shutdown (HTTP long polling, user uploads, etc)
 
