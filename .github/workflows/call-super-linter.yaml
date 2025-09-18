@@ -13,10 +13,12 @@ jobs:
   call-super-linter:
 
     name: Call Super-Linter
-    
+
+    # all other permissions not listed are set to `none`
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions
     permissions:
       contents: read # clone the repo to lint
-      statuses: write #read/write to repo custom statuses
+      statuses: none #read/write to repo custom statuses
 
     ### use Reusable Workflows to call my workflow remotely
     ### https://docs.github.com/en/actions/learn-github-actions/reusing-workflows
