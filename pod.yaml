@@ -44,6 +44,9 @@ spec:
   
   terminationGracePeriodSeconds: 600 # default is 30, but you may need more time to gracefully shutdown (HTTP long polling, user uploads, etc)
 
+  # give the pod its own Linux user namespace (GA in Kubernetes 1.36, needs Linux 6.3+ and containerd 2.0+ or CRI-O 1.25+)
+  hostUsers: false           # container UIDs (even root) map to unprivileged UIDs on the host that no other pod uses
+
   # per-pod security context
   # enable seccomp and force non-root user
   securityContext:
