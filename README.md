@@ -49,6 +49,9 @@ spec:
 
   terminationGracePeriodSeconds: 600 # default is 30, but you may need more time to gracefully shutdown (HTTP long polling, user uploads, etc)
 
+  # don't inject Docker-link-style env vars for every Service in the namespace (use DNS names instead)
+  enableServiceLinks: false  # default is true, which adds ~7 env vars per Service and can clash with your app's own env vars
+
   # don't mount a Kubernetes API token into the pod unless the app calls the Kubernetes API
   automountServiceAccountToken: false # a stolen token is an API credential, so only mount it when needed
 
@@ -159,8 +162,24 @@ These settings make the Pod predictable: the same image every time, and a known 
 | `image: my-image:tag` with a fixed tag | container | Never use tags that move, like `latest` or `stable`. A moving tag means two Pods of the same Deployment can run different code, a rollback may not roll back, and you can't tell later which code ran during an incident. Use a semver, git SHA, or build ID tag. A digest (`my-image:tag@sha256:...`) is the strongest pin. |
 | No `imagePullPolicy` | container | You can likely leave this out, because the [defaults are smart and tend to do the right thing](https://kubernetes.io/docs/concepts/containers/images/#imagepullpolicy-defaulting): `Always` for `latest` or no tag, `IfNotPresent` for everything else. |
 | `ports.containerPort: 8080` | container | Hardcode the listening port, because many images don't set `EXPOSE` in the Dockerfile. It documents the port for readers, and you can give it a `name` so probes and Services refer to the port by name. |
+| `enableServiceLinks: false` | Pod | Stops Kubernetes from adding environment variables for every Service in the namespace to every container. Apps should find Services by DNS name (`my-svc` or `my-svc.my-namespace.svc`), not by these variables. See [Service links](#service-links-enableservicelinks-false) below. |
+
+#### Service links (`enableServiceLinks: false`)
+
+When a container starts, the kubelet adds environment variables for each Service in the Pod's namespace. This is an old copy of Docker's `--link` feature from before cluster DNS. A Service named `redis` adds `REDIS_SERVICE_HOST`, `REDIS_SERVICE_PORT`, `REDIS_PORT`, `REDIS_PORT_6379_TCP`, `REDIS_PORT_6379_TCP_ADDR`, and more. The default is `true`.
+
+Why turn it off:
+
+- **Variable clashes.** Your app may read its own `REDIS_PORT` and expect `6379`, but get `tcp://10.96.12.34:6379` from the Service link instead. These bugs appear only in namespaces where a Service with that name exists, so they are hard to find.
+- **Startup time and size.** Each Service adds about seven variables. In namespaces with many Services, the environment gets very large, which [slows container start](https://github.com/knative/serving/issues/8498) (thanks [@e_k_anderson](https://twitter.com/e_k_anderson/status/1550486493868826630)). With enough Services, a container can fail to start because the environment is too big.
+- **Less information to an attacker.** Anyone who can read the process environment (`/proc/<pid>/environ`, a debug page, a crash report) gets a list of every Service IP and port in the namespace.
+- **The variables are stale.** They show only the Services that existed when the container started. DNS is always current.
+
+Things to know:
+
+- The `KUBERNETES_SERVICE_HOST` and `KUBERNETES_SERVICE_PORT` variables for the API server are still set. Kubernetes client libraries use them, so in-cluster API access still works.
+- Before you turn this off, search your app's code and config for `_SERVICE_HOST`, `_SERVICE_PORT`, and `_PORT_` variables, and change them to DNS names.
 
 ## Additional factors and suggestions that affect pod spec
 
-- If you have over ~1,000 services in a namespace, maybe set `pod.spec.enableServiceLinks: false` to avoid [minor container startup and TCP round-trip delays](https://github.com/knative/serving/issues/8498) thanks [@e_k_anderson](https://twitter.com/e_k_anderson/status/1550486493868826630).
 - `pod.spec.containers.securityContext.readOnlyRootFilesystem` is a good idea if possible, but usually doesn't work out-of-the-box with monoliths and traditional apps. [YMMV](https://en.wiktionary.org/wiki/your_mileage_may_vary).
