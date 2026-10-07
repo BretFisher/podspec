@@ -44,6 +44,9 @@ spec:
   
   terminationGracePeriodSeconds: 600 # default is 30, but you may need more time to gracefully shutdown (HTTP long polling, user uploads, etc)
 
+  # don't mount a Kubernetes API token into the pod unless the app calls the Kubernetes API
+  automountServiceAccountToken: false # a stolen token is an API credential, so only mount it when needed
+
   # give the pod its own Linux user namespace (GA in Kubernetes 1.36, needs Linux 6.3+ and containerd 2.0+ or CRI-O 1.25+)
   hostUsers: false           # container UIDs (even root) map to unprivileged UIDs on the host that no other pod uses
 
