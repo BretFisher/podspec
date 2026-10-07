@@ -49,6 +49,9 @@ spec:
 
   terminationGracePeriodSeconds: 600 # default is 30, but you may need more time to gracefully shutdown (HTTP long polling, user uploads, etc)
 
+  # don't mount a Kubernetes API token into the pod unless the app calls the Kubernetes API
+  automountServiceAccountToken: false # a stolen token is an API credential, so only mount it when needed
+
   # give the pod its own Linux user namespace (GA in Kubernetes 1.36, needs Linux 6.3+ and containerd 2.0+ or CRI-O 1.25+)
   hostUsers: false           # container UIDs (even root) map to unprivileged UIDs on the host that no other pod uses
 
@@ -80,6 +83,7 @@ These settings limit what a compromised or buggy container can do to the node, t
 | `allowPrivilegeEscalation: false` | container `securityContext` | Sets the Linux `no_new_privs` flag, so a process can't gain more privileges than its parent. That blocks setuid binaries like `sudo` and file capabilities from raising privileges inside the container. Also required by the "Restricted" profile. |
 | `privileged: false` | container `securityContext` | This is already the default, but stating it makes the intent clear to readers and reviewers. A privileged container gets all capabilities and access to the host's devices, which is effectively host root. |
 | `hostUsers: false` | Pod | Runs the Pod in its own Linux user namespace. Container UIDs, even root, map to an unprivileged UID range on the host that no other Pod on the node shares. A container escape then lands as a nobody user on the host, and it can't touch other Pods' files. See [User namespaces](#user-namespaces-hostusers-false) below. |
+| `automountServiceAccountToken: false` | Pod | By default, Kubernetes mounts a token for the Pod's ServiceAccount at `/var/run/secrets/kubernetes.io/serviceaccount/`. Most apps never call the Kubernetes API, so the token is only useful to an attacker who gets into the container (remote code execution, path traversal, SSRF that reads files). Turn it off by default, and set it to `true` only for Pods that talk to the API (operators, controllers, CI runners). See [Service account tokens](#service-account-tokens-automountserviceaccounttoken-false) below. |
 
 #### User namespaces (`hostUsers: false`)
 
@@ -113,6 +117,22 @@ Limits:
 
 1. Use a numeric `USER` in the Dockerfile (for example `USER 1000`), or
 2. Set `runAsUser` in the manifest. The kubelet checks `runAsUser` first, and when it's set and non-zero, the kubelet skips the image's `USER` check.
+
+#### Service account tokens (`automountServiceAccountToken: false`)
+
+Every Pod runs as a ServiceAccount (the namespace's `default` one if you don't set `serviceAccountName`). Unless you turn it off, the kubelet mounts a short-lived, auto-rotated token for that ServiceAccount into every container.
+
+Why turn it off:
+
+- **Least privilege.** If the app doesn't call the Kubernetes API, it doesn't need a credential for it.
+- **Less to steal.** A token in a file is easy to read after a remote code execution or a file-read bug. With it, an attacker can call the API as your ServiceAccount, and find out what the RBAC allows.
+- **RBAC drift.** Today the `default` ServiceAccount may have no permissions, but someone can add a RoleBinding to it later. A Pod with no token is safe from that change.
+
+Things to know:
+
+- You can set it on the Pod (as this spec does) or on the ServiceAccount object. The Pod setting wins when both are set.
+- If the app needs the API, set `automountServiceAccountToken: true`, set `serviceAccountName` to a dedicated ServiceAccount, and give that ServiceAccount only the RBAC it needs. Don't give permissions to the `default` ServiceAccount.
+- The token is not the only way a Pod gets identity. If the app needs a token for another audience (a cloud provider, Vault), use a [projected `serviceAccountToken` volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken) with its own `audience` and `expirationSeconds`. That works with `automountServiceAccountToken: false`.
 
 ### Availability
 
