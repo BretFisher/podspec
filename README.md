@@ -65,6 +65,11 @@ spec:
     seccompProfile:
       type: RuntimeDefault   # enable seccomp and the runtimes default profile
 
+    # appArmorProfile is unset on purpose: on AppArmor nodes, containerd already applies its default profile when this is unset,
+    # and the kubelet rejects pods that set it on nodes without AppArmor (SELinux nodes). See the README.
+    #appArmorProfile:
+    #  type: RuntimeDefault  # GA since 1.31. Uncomment only if every node runs AppArmor (Ubuntu, Debian, COS)
+
     runAsUser: 1001          # hardcode user to non-root if not set in Dockerfile
     runAsGroup: 1001         # hardcode group to non-root if not set in Dockerfile
     runAsNonRoot: true       # hardcode to non-root. Redundant to above if Dockerfile is set USER 1000
@@ -87,6 +92,7 @@ These settings limit what a compromised or buggy container can do to the node, t
 | `privileged: false` | container `securityContext` | This is already the default, but stating it makes the intent clear to readers and reviewers. A privileged container gets all capabilities and access to the host's devices, which is effectively host root. |
 | `hostUsers: false` | Pod | Runs the Pod in its own Linux user namespace. Container UIDs, even root, map to an unprivileged UID range on the host that no other Pod on the node shares. A container escape then lands as a nobody user on the host, and it can't touch other Pods' files. See [User namespaces](#user-namespaces-hostusers-false) below. |
 | `automountServiceAccountToken: false` | Pod | By default, Kubernetes mounts a token for the Pod's ServiceAccount at `/var/run/secrets/kubernetes.io/serviceaccount/`. Most apps never call the Kubernetes API, so the token is only useful to an attacker who gets into the container (remote code execution, path traversal, SSRF that reads files). Turn it off by default, and set it to `true` only for Pods that talk to the API (operators, controllers, CI runners). See [Service account tokens](#service-account-tokens-automountserviceaccounttoken-false) below. |
+| `appArmorProfile.type: RuntimeDefault` (commented out) | Pod `securityContext` | AppArmor limits which files, mounts, and kernel interfaces a process can use. It adds to seccomp; it doesn't replace it. The line is commented out because it can stop the Pod from starting on nodes without AppArmor, and on AppArmor nodes the runtime usually applies the default profile already. See [AppArmor and seccomp](#apparmor-and-seccomp-apparmorprofile) below. |
 
 #### User namespaces (`hostUsers: false`)
 
@@ -136,6 +142,39 @@ Things to know:
 - You can set it on the Pod (as this spec does) or on the ServiceAccount object. The Pod setting wins when both are set.
 - If the app needs the API, set `automountServiceAccountToken: true`, set `serviceAccountName` to a dedicated ServiceAccount, and give that ServiceAccount only the RBAC it needs. Don't give permissions to the `default` ServiceAccount.
 - The token is not the only way a Pod gets identity. If the app needs a token for another audience (a cloud provider, Vault), use a [projected `serviceAccountToken` volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken) with its own `audience` and `expirationSeconds`. That works with `automountServiceAccountToken: false`.
+
+#### AppArmor and seccomp (`appArmorProfile`)
+
+**Should you use AppArmor if you already use seccomp?** Yes, if your nodes have AppArmor. They are two different layers, and container runtimes use both by default:
+
+| | seccomp | AppArmor |
+| --- | --- | --- |
+| What it filters | **Which syscalls** a process can make (for example, block `mount`, `kexec_load`, `bpf`). | **What a process can do to which objects**: file paths, mounts, `/proc` and `/sys` writes, some capabilities. |
+| How it sees the system | Syscall numbers and arguments. It can't see file paths. | Paths and object types. It doesn't block a syscall as a whole. |
+| Kubernetes default | `Unconfined` unless you set `seccompProfile` or the kubelet's `seccompDefault`. | The runtime's default profile, on nodes with AppArmor, for containers that aren't privileged. |
+
+So the two don't overlap much. seccomp makes the kernel smaller for the container. AppArmor stops a process from writing to sensitive files with syscalls that seccomp allows (`open`, `write`).
+
+The "use one or the other" rule you may have heard is about **AppArmor vs SELinux**. Both are Linux Security Modules (LSMs) that control file access, and a node runs one of them. The node's operating system decides which one:
+
+- **AppArmor:** Ubuntu, Debian, and Google's Container-Optimized OS (GKE).
+- **SELinux:** RHEL, Fedora, Amazon Linux 2023 (EKS), Bottlerocket, and OpenShift's RHCOS.
+
+Use seccomp **plus** the LSM your nodes have. Don't try to set up both AppArmor and SELinux.
+
+**Why `appArmorProfile` is commented out in this spec:**
+
+1. **On nodes without AppArmor, it stops the Pod.** If a Pod sets `appArmorProfile` to anything other than `Unconfined`, the kubelet [checks that AppArmor is enabled on the host](https://kubernetes.io/docs/tutorials/security/apparmor/) before it admits the Pod. On an SELinux node, the Pod fails with `AppArmor is not enabled on the host`. This spec is a default for many clusters, so it must not fail on SELinux nodes.
+2. **On AppArmor nodes, the default profile is usually on already.** When `appArmorProfile` isn't set, containerd applies its default profile to every container that isn't privileged. (I checked this in containerd's source. Check your runtime's docs for CRI-O.)
+
+**When to uncomment it:**
+
+- Every node in the cluster runs AppArmor, and you want the manifest to state the profile (for reviews and policy tools), or
+- You wrote a custom profile and loaded it on every node. Use `type: Localhost` and `localhostProfile: <profile-name>`.
+
+**Don't** set `type: Unconfined`. It turns AppArmor off for the Pod, and the Pod Security Standards "Baseline" profile forbids it.
+
+The `appArmorProfile` field became GA in Kubernetes 1.31. It replaces the old `container.apparmor.security.beta.kubernetes.io/<container>` annotation. Use the field, not the annotation.
 
 ### Availability
 
