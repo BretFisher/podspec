@@ -60,6 +60,11 @@ spec:
     seccompProfile:
       type: RuntimeDefault   # enable seccomp and the runtimes default profile
 
+    # appArmorProfile is unset on purpose: on AppArmor nodes, containerd already applies its default profile when this is unset,
+    # and the kubelet rejects pods that set it on nodes without AppArmor (SELinux nodes). See the README.
+    #appArmorProfile:
+    #  type: RuntimeDefault  # GA since 1.31. Uncomment only if every node runs AppArmor (Ubuntu, Debian, COS)
+
     runAsUser: 1001          # hardcode user to non-root if not set in Dockerfile
     runAsGroup: 1001         # hardcode group to non-root if not set in Dockerfile
     runAsNonRoot: true       # hardcode to non-root. Redundant to above if Dockerfile is set USER 1000
