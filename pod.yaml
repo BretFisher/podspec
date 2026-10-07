@@ -28,7 +28,7 @@ spec:
           path: /alive
           port: 8080
 
-      resources:             # Because if limits = requests then QoS is set to "Guaranteed"
+      resources:             # memory limit = request, so the scheduler reserves what the app can actually use
         limits:
           memory: "500Mi"    # If container uses over 500MB it is killed (OOM)
           #cpu: "2"          # Not normally needed, unless you need to protect other workloads or QoS must be "Guaranteed"

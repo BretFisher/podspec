@@ -1,13 +1,12 @@
 # Kubernetes Pod Specification Good Defaults
 
-The Pod spec for your apps can be one of the more complex parts of your Kubernetes manifest design, and needs many features enabled to be a save and reasonably secure default.
+The Pod spec for your apps can be one of the more complex parts of your Kubernetes manifest design, and needs many features enabled to be a safe and reasonably secure default.
 
 This single-file repository is meant to be a starting point for your Pod specs, to add to Deployments, DaemonSets, StatefulSets, initContainers, etc.
 
 It's based on years of consulting, the Kubernetes courses and workshops I do, and [this tweet when I first had the idea](https://twitter.com/BretFisher/status/1550326044577730560).
 
 ## Watch me [walk through this `pod.yaml` on YouTube](https://www.youtube.com/watch?v=4CzG4Uqd9jM)
-
 
 ## The spec from [`./pod.yaml`](./pod.yaml)
 
@@ -34,7 +33,7 @@ spec:
           path: /alive
           port: 8080
 
-      resources:             # Because if limits = requests then QoS is set to "Guaranteed"
+      resources:             # memory limit = request, so the scheduler reserves what the app can actually use
         limits:
           memory: "500Mi"    # If container uses over 500MB it is killed (OOM)
           #cpu: "2"          # Not normally needed, unless you need to protect other workloads or QoS must be "Guaranteed"
@@ -47,7 +46,6 @@ spec:
       securityContext:
         allowPrivilegeEscalation: false # prevent sudo, etc.
         privileged: false               # prevent acting like host root
-
 
   terminationGracePeriodSeconds: 600 # default is 30, but you may need more time to gracefully shutdown (HTTP long polling, user uploads, etc)
 
@@ -63,11 +61,54 @@ spec:
     runAsNonRoot: true       # hardcode to non-root. Redundant to above if Dockerfile is set USER 1000
 ```
 
+## Why each setting is in the spec
+
+Each setting below is in [`pod.yaml`](./pod.yaml) on purpose. They're grouped by what they protect: the **security** of the node and cluster, the **availability** of your app, and the **image and networking** details that make the Pod predictable.
+
+### Security
+
+These settings limit what a compromised or buggy container can do to the node, to other Pods, and to the cluster.
+
+| Setting | Where | Why it's a good default |
+| --- | --- | --- |
+| `seccompProfile.type: RuntimeDefault` | Pod `securityContext` | Kubernetes runs containers **without** a seccomp filter (`Unconfined`) unless you ask for one, or unless the cluster admin turned on the kubelet's `seccompDefault` option. `RuntimeDefault` turns on the container runtime's default filter, which blocks dozens of syscalls a normal app never calls (kernel module loading, `reboot`, `mount`, etc). It's cheap, broad attack-surface reduction, and the Pod Security Standards "Restricted" profile requires it. |
+| `runAsNonRoot: true` | Pod `securityContext` | The kubelet refuses to start the container if it would run as UID 0. This catches the image that forgot a `USER` line in its Dockerfile. Root in a container is still root on the kernel, so a container escape as root is far worse than one as a regular user. |
+| `runAsUser: 1001` and `runAsGroup: 1001` | Pod `securityContext` | Forces a known non-root UID/GID, even if the image doesn't set one. Some teams require these in the manifest (or enforce them with an admission controller) so the server, not the Dockerfile, decides the user. You can remove them if your image sets a numeric non-root `USER` (also true for ko and buildpacks, thanks [@e_k_anderson](https://twitter.com/e_k_anderson/status/1550485281261817856)). Make sure the UID can read the app's files in the image. |
+| `allowPrivilegeEscalation: false` | container `securityContext` | Sets the Linux `no_new_privs` flag, so a process can't gain more privileges than its parent. That blocks setuid binaries like `sudo` and file capabilities from raising privileges inside the container. Also required by the "Restricted" profile. |
+| `privileged: false` | container `securityContext` | This is already the default, but stating it makes the intent clear to readers and reviewers. A privileged container gets all capabilities and access to the host's devices, which is effectively host root. |
+
+**A `runAsNonRoot` gotcha:** if the Dockerfile `USER` is a name (like `node`) and not a number, you'll get `CreateContainerConfigError: container has runAsNonRoot and image has non-numeric user (node), cannot verify user is non-root`. The kubelet can't prove that a username isn't mapped to UID 0. Two fixes:
+
+1. Use a numeric `USER` in the Dockerfile (for example `USER 1000`), or
+2. Set `runAsUser` in the manifest. The kubelet checks `runAsUser` first, and when it's set and non-zero, the kubelet skips the image's `USER` check.
+
+### Availability
+
+These settings keep your app serving traffic during deploys, node pressure, and shutdowns.
+
+| Setting | Where | Why it's a good default |
+| --- | --- | --- |
+| `readinessProbe` | container | Kubernetes sends Service traffic only to Pods that pass this check, and a rolling update waits for new Pods to be ready before it removes old ones. Without it, a Pod is "ready" the moment its process starts, so users hit an app that is still booting. I recommend it even for apps with no listening port (use an `exec` probe), because it controls rolling update speed. |
+| `livenessProbe` | container | The kubelet restarts the container when this check fails. Only add it if your app is known to hang (deadlock, stuck connection pool). A bad liveness probe can cause a restart loop during a slow start or a traffic spike, so this one is up for debate. Don't make it check a dependency, like the database, or a database outage restarts every Pod. |
+| Probe timing values | each probe | The defaults (`periodSeconds: 10`, `timeoutSeconds: 1`, `failureThreshold: 3`) are often wrong for slow-starting apps like JVMs and Rails. Tune them for your workload, or add a `startupProbe` for apps with a long boot. |
+| `resources.requests.memory` and `resources.requests.cpu` | container | The scheduler uses requests to pick a node with enough free capacity. Without requests, the scheduler can pack too many Pods on one node, and your Pod is first in line for eviction under node pressure. |
+| `resources.limits.memory` equal to `requests.memory` | container | Memory can't be throttled, only reclaimed by killing a process. With limit = request, the scheduler reserves all the memory the app can use, so the node doesn't run out because of overcommit. The container is OOM-killed if it goes over the limit, which is easier to see and fix than a node-wide memory problem. |
+| No CPU limit | container | CPU is compressible: when a container wants more than its request, it gets idle CPU if there is some. A CPU limit throttles the app even when the node is idle, which hurts latency. Add one only to protect other workloads, or if you need `Guaranteed` QoS (see below). |
+| `terminationGracePeriodSeconds: 600` | Pod | The default is 30 seconds. After `SIGTERM`, the kubelet waits this long before it sends `SIGKILL`. Long HTTP polls, WebSockets, file uploads, and queue workers often need more time to finish. This is a maximum: an app that exits early doesn't wait the full 600 seconds. |
+
+**About QoS classes:** Kubernetes gives each Pod a [Quality of Service (QoS) class](https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/), which decides which Pods the kubelet evicts first when a node runs out of resources. A Pod is `Guaranteed` only when **every** container sets **both** CPU and memory limits equal to its requests. This spec has no CPU limit, so it gets `Burstable`. That's a deliberate trade: no CPU throttling, and memory is still safe because limit = request. If you need `Guaranteed` (for example, for CPU pinning with the static CPU manager), uncomment the CPU limit and set it equal to the CPU request.
+
+### Image and networking
+
+These settings make the Pod predictable: the same image every time, and a known port.
+
+| Setting | Where | Why it's a good default |
+| --- | --- | --- |
+| `image: my-image:tag` with a fixed tag | container | Never use tags that move, like `latest` or `stable`. A moving tag means two Pods of the same Deployment can run different code, a rollback may not roll back, and you can't tell later which code ran during an incident. Use a semver, git SHA, or build ID tag. A digest (`my-image:tag@sha256:...`) is the strongest pin. |
+| No `imagePullPolicy` | container | You can likely leave this out, because the [defaults are smart and tend to do the right thing](https://kubernetes.io/docs/concepts/containers/images/#imagepullpolicy-defaulting): `Always` for `latest` or no tag, `IfNotPresent` for everything else. |
+| `ports.containerPort: 8080` | container | Hardcode the listening port, because many images don't set `EXPOSE` in the Dockerfile. It documents the port for readers, and you can give it a `name` so probes and Services refer to the port by name. |
+
 ## Additional factors and suggestions that affect pod spec
 
-- For `spec.containers.resources`, it's good to review how [Kubernetes Quality of Service (QoS)](https://kubernetes.io/docs/tasks/configure-pod-container/quality-service-pod/) works, as it'll affect when your pod is evicted from a node when it runs out of resources. For example, if your limits don't match your requests, then your pod only receives a QoS class of Burstable rather than the highest level of Guaranteed.
-- You can remove `runAsUser/runAsGroup` if you are using a Dockerfile that sets the user/group to non-root (or ko or buildpacks, thanks [@e_k_anderson](https://twitter.com/e_k_anderson/status/1550485281261817856)), but some teams will still require these values hardcoded in the manifest (or in admission controller) to enforce at the server-side.
-- If `runAsNonRoot` is true (as it should be), you may get error `CreateContainerConfigError: Error: container has runAsNonRoot and image has non-numeric user (username), cannot verify user is non-root.` if your Dockerfile `USER` isn't an ID. Kubernetes wants it as an ID (not friendly username like `node`) to ensure it's not just a user mapping to UID 0 (root). I think this can be avoided if you hardcode the user as well in the manifest (`runAsUser`), but I haven't tested that.
 - If you have over ~1,000 services in a namespace, maybe set `pod.spec.enableServiceLinks: false` to avoid [minor container startup and TCP round-trip delays](https://github.com/knative/serving/issues/8498) thanks [@e_k_anderson](https://twitter.com/e_k_anderson/status/1550486493868826630).
-- You can likely avoid needing `pod.spec.containers.imagePullPolicy` because the [defaults are smart and tend to do the right thing](https://kubernetes.io/docs/concepts/containers/images/#imagepullpolicy-defaulting).
 - `pod.spec.containers.securityContext.readOnlyRootFilesystem` is a good idea if possible, but usually doesn't work out-of-the-box with monoliths and traditional apps. [YMMV](https://en.wiktionary.org/wiki/your_mileage_may_vary).
