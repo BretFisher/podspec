@@ -49,6 +49,9 @@ spec:
 
   terminationGracePeriodSeconds: 600 # default is 30, but you may need more time to gracefully shutdown (HTTP long polling, user uploads, etc)
 
+  # give the pod its own Linux user namespace (GA in Kubernetes 1.36, needs Linux 6.3+ and containerd 2.0+ or CRI-O 1.25+)
+  hostUsers: false           # container UIDs (even root) map to unprivileged UIDs on the host that no other pod uses
+
   # per-pod security context
   # enable seccomp and force non-root user
   securityContext:
@@ -76,6 +79,35 @@ These settings limit what a compromised or buggy container can do to the node, t
 | `runAsUser: 1001` and `runAsGroup: 1001` | Pod `securityContext` | Forces a known non-root UID/GID, even if the image doesn't set one. Some teams require these in the manifest (or enforce them with an admission controller) so the server, not the Dockerfile, decides the user. You can remove them if your image sets a numeric non-root `USER` (also true for ko and buildpacks, thanks [@e_k_anderson](https://twitter.com/e_k_anderson/status/1550485281261817856)). Make sure the UID can read the app's files in the image. |
 | `allowPrivilegeEscalation: false` | container `securityContext` | Sets the Linux `no_new_privs` flag, so a process can't gain more privileges than its parent. That blocks setuid binaries like `sudo` and file capabilities from raising privileges inside the container. Also required by the "Restricted" profile. |
 | `privileged: false` | container `securityContext` | This is already the default, but stating it makes the intent clear to readers and reviewers. A privileged container gets all capabilities and access to the host's devices, which is effectively host root. |
+| `hostUsers: false` | Pod | Runs the Pod in its own Linux user namespace. Container UIDs, even root, map to an unprivileged UID range on the host that no other Pod on the node shares. A container escape then lands as a nobody user on the host, and it can't touch other Pods' files. See [User namespaces](#user-namespaces-hostusers-false) below. |
+
+#### User namespaces (`hostUsers: false`)
+
+Without a user namespace, UID 1001 in your container **is** UID 1001 on the host, and root in a container **is** root on the host, limited only by capabilities, seccomp, and AppArmor/SELinux. Many container-escape CVEs give the attacker the container's UID on the host. With `hostUsers: false`, that host UID is a high, unused number that owns nothing on the host.
+
+What you get:
+
+- **Escapes land unprivileged.** Container root maps to a host UID with no rights to host files or devices.
+- **Pods are isolated from each other.** The kubelet gives each Pod its own UID/GID range, so two Pods that both run as UID 1001 are different users on the host.
+- **Capabilities are scoped to the Pod.** Even a capability like `CAP_SYS_ADMIN` is valid only inside the Pod's user namespace, not for the host. `CAP_SYS_MODULE` can't load kernel modules.
+- **Nothing changes inside the container.** `runAsUser`, `runAsGroup`, `fsGroup`, and the file owners on volumes still use the in-container IDs. The kubelet uses idmap mounts, so you don't `chown` volumes.
+
+Status and defaults:
+
+- `hostUsers` became GA (stable) in **Kubernetes 1.36** (April 2026). It was beta and on by default since 1.33.
+- GA didn't change the default. `hostUsers` still defaults to `true` (share the host's user namespace), so you must opt in per Pod.
+
+Requirements on each node (a Pod with `hostUsers: false` on a node that can't do it fails to start, with an error in its events):
+
+- Linux kernel **6.3 or later** (for idmap mounts on tmpfs, which Secret and service account token volumes use).
+- Container runtime: **containerd 2.0+** or **CRI-O 1.25+**, with **runc 1.2+** or **crun 1.9+**.
+- The filesystems for `/var/lib/kubelet/pods/` and for every volume the Pod mounts must support idmap mounts. ext4, xfs, btrfs, tmpfs, and overlayfs do. NFS doesn't.
+- Check your nodes with `kubectl get nodes -o wide`, which shows the kernel and container runtime versions. Managed Kubernetes node images vary, so check them before you roll this out.
+
+Limits:
+
+- A Pod with `hostUsers: false` can't also use `hostNetwork`, `hostPID`, or `hostIPC`. Those Pods (CNI agents, node monitoring DaemonSets) need the host user namespace.
+- In-container UIDs/GIDs above 65535 map to the overflow ID (usually 65534), so keep `runAsUser` below 65536.
 
 **A `runAsNonRoot` gotcha:** if the Dockerfile `USER` is a name (like `node`) and not a number, you'll get `CreateContainerConfigError: container has runAsNonRoot and image has non-numeric user (node), cannot verify user is non-root`. The kubelet can't prove that a username isn't mapped to UID 0. Two fixes:
 
