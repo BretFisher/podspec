@@ -8,6 +8,10 @@ It's based on years of consulting, the Kubernetes courses and workshops I do, an
 
 ## Watch me [walk through this `pod.yaml` on YouTube](https://www.youtube.com/watch?v=4CzG4Uqd9jM)
 
+## Use it with your AI agent
+
+The [`k8s-podspec-pro`](https://github.com/BretFisher/skills/tree/main/plugins/devops/skills/k8s-podspec-pro) agent skill writes and reviews Kubernetes manifests against this `pod.yaml`. It works with Claude Code, Codex, Cursor, Copilot, and other agents. It comes in the `bretfisher-devops` plugin of my [skills repo](https://github.com/BretFisher/skills#install), which has the install steps for each agent.
+
 ## The spec from [`./pod.yaml`](./pod.yaml)
 
 ```yaml
